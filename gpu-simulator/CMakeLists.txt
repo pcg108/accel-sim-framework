@@ -20,7 +20,7 @@ else()
 endif()
 
 # Override default CMake Release flags to keep assertions enabled
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -g3 -fPIC -Wall")
+set(CMAKE_CXX_FLAGS_RELEASE "-O0 -g3 -fPIC -Wall")
 
 # check envrionment variable string compare
 if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
