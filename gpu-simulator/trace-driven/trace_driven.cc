@@ -144,6 +144,7 @@ const trace_warp_inst_t *trace_shd_warp_t::get_next_trace_inst() {
   new_inst->parse_from_trace_struct(inst, m_kernel_info->OpcodeMap,
                                     m_kernel_info->m_tconfig,
                                     m_kernel_info->m_kernel_trace_info);
+  new_inst->set_kernel_name(m_kernel_info->get_name());
   trace_pc++;
   return new_inst;
 }
@@ -193,6 +194,7 @@ trace_kernel_info_t::trace_kernel_info_t(dim3 gridDim, dim3 blockDim,
   m_parser = parser;
   m_tconfig = config;
   m_kernel_trace_info = kernel_trace_info;
+  set_trace_kernel_id(kernel_trace_info->kernel_id);
   m_was_launched = false;
 
   // resolve the binary version
