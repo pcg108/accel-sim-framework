@@ -144,6 +144,7 @@ const trace_warp_inst_t *trace_shd_warp_t::get_next_trace_inst() {
   new_inst->parse_from_trace_struct(inst, m_kernel_info->OpcodeMap,
                                     m_kernel_info->m_tconfig,
                                     m_kernel_info->m_kernel_trace_info);
+  new_inst->set_kernel_uid(m_kernel_info->get_trace_kernel_id());
   new_inst->set_kernel_name(m_kernel_info->get_name());
   trace_pc++;
   return new_inst;
