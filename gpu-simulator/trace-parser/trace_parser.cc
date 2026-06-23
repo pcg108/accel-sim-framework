@@ -428,21 +428,41 @@ void trace_parser::get_next_threadblock_traces(
 
 PipeReader::PipeReader(const std::string &filePath) { OpenFile(filePath); }
 
+PipeReader::~PipeReader() { CloseFile(); }
+
+void PipeReader::CloseFile() {
+  if (pipe) {
+    if (is_pipe) {
+      pclose(pipe);
+    } else {
+      fclose(pipe);
+    }
+    pipe = NULL;
+    is_pipe = false;
+  }
+}
+
 void PipeReader::OpenFile(const std::string &filePath) {
   if (hasEnding(filePath, ".xz")) {
     // Use xz command to decompress .xz files
     command = "xz -dc " + filePath;
+    pipe = popen(command.c_str(), "r");
+    is_pipe = true;
   } else if (hasEnding(filePath, ".traceg")) {
-    // Use cat command for regular trace files
-    command = "cat " + filePath;
+    pipe = fopen(filePath.c_str(), "r");
+    is_pipe = false;
   } else {
     throw std::runtime_error("Unsupported file type!");
   }
 
-  // Open the pipe
-  pipe = popen(command.c_str(), "r");
   if (!pipe) {
-    throw std::runtime_error("Failed to open pipe!");
+    std::ostringstream err;
+    err << "Failed to open trace file '" << filePath << "'";
+    if (!command.empty()) {
+      err << " with command '" << command << "'";
+    }
+    err << ": " << strerror(errno);
+    throw std::runtime_error(err.str());
   }
 }
 
@@ -476,17 +496,22 @@ bool PipeReader::hasEnding(const std::string &fullString,
 }
 
 PipeReader::PipeReader(PipeReader &&other) noexcept
-    : pipe(other.pipe), command(other.command) {
+    : pipe(other.pipe), is_pipe(other.is_pipe), command(other.command) {
   other.pipe = NULL;
+  other.is_pipe = false;
   other.command = {};
 }
 
 PipeReader &PipeReader::operator=(PipeReader &&other) noexcept {
   if (this != &other) {
+    CloseFile();
+
     pipe = other.pipe;
+    is_pipe = other.is_pipe;
     command = other.command;
 
     other.pipe = NULL;
+    other.is_pipe = false;
     other.command = {};
   }
   return *this;
