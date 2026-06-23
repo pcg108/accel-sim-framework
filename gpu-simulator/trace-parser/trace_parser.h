@@ -134,12 +134,7 @@ class PipeReader {
   PipeReader() {}  // default: no file opened
   PipeReader(const std::string &filePath);
 
-  // Destructor to close the pipe
-  ~PipeReader() {
-    if (pipe) {
-      pclose(pipe);  // Close the pipe when done
-    }
-  }
+  ~PipeReader();
 
   // It does not make sense to implement copy semantics for PipeReader,
   // because each instance should hold a unique Linux pipe handle
@@ -155,6 +150,7 @@ class PipeReader {
 
  private:
   FILE *pipe = NULL;    // Store the pipe
+  bool is_pipe = false;
   std::string command;  // Store the shell command to be executed
 
   // Helper function to check if a string ends with a specific suffix (file
@@ -162,6 +158,7 @@ class PipeReader {
   bool hasEnding(const std::string &fullString, const std::string &ending);
 
   void OpenFile(const std::string &filePath);
+  void CloseFile();
 };
 
 class TracezReader;  // forward declaration
