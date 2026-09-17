@@ -623,6 +623,19 @@ PipeReader::PipeReader(const std::string &filePath) { OpenFile(filePath); }
 
 PipeReader::~PipeReader() { CloseFile(); }
 
+static std::string shell_quote_trace_path(const std::string &path) {
+  std::string quoted = "'";
+  for (char c : path) {
+    if (c == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += c;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
 void PipeReader::CloseFile() {
   if (pipe) {
     if (is_pipe) {
@@ -638,7 +651,7 @@ void PipeReader::CloseFile() {
 void PipeReader::OpenFile(const std::string &filePath) {
   if (hasEnding(filePath, ".xz")) {
     // Use xz command to decompress .xz files
-    command = "xz -dc " + filePath;
+    command = "xz -dc -- " + shell_quote_trace_path(filePath);
     pipe = popen(command.c_str(), "r");
     is_pipe = true;
   } else if (hasEnding(filePath, ".traceg")) {
