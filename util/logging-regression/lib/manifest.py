@@ -110,7 +110,7 @@ def init_manifest(args: argparse.Namespace) -> int:
             "scheduler_trace": args.scheduler_trace == "on",
             "scheduler_sampling_core": 0 if args.scheduler_trace == "on" else None,
             "outputs": {
-                "l1_trace": str(args.working_directory / "l1_trace"),
+                "l2_trace": str(args.working_directory / "l2_trace"),
                 "icache_status": str(args.working_directory / "icache_status"),
                 "dcache_status": str(args.working_directory / "dcache_status"),
                 "warp_assignments": str(args.working_directory / "warp_assignments"),
@@ -128,8 +128,8 @@ def init_manifest(args: argparse.Namespace) -> int:
             "stderr": str(args.stderr),
             "environment": {
                 "LOG_CACHE_TRACES": "1" if args.cache_traces == "on" else None,
-                "L1_TRACE_DIR": (
-                    str(args.working_directory / "l1_trace")
+                "L2_TRACE_DIR": (
+                    str(args.working_directory / "l2_trace")
                     if args.cache_traces == "on"
                     else None
                 ),

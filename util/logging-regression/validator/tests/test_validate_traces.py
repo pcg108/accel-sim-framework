@@ -16,7 +16,7 @@ def write(path: Path, text: str) -> None:
 
 def add_kernel(root: Path, kernel_id: int, *, candidate: bool, bad_elapsed: bool = False) -> None:
     kernel = f"kernel_{kernel_id}_test_kernel"
-    l1_root = root / ("l1_trace" if candidate else "l2_trace")
+    l1_root = root / "l2_trace"
     common = Path(kernel) / "shader_0" / "scheduler_0"
     write(
         l1_root / common / "l1_to_l2_requests.txt",
@@ -96,7 +96,7 @@ class ValidatorTests(unittest.TestCase):
         completed = subprocess.run(command, text=True, capture_output=True, check=False)
         return completed, json.loads(json_out.read_text(encoding="utf-8")), markdown_out
 
-    def test_candidate_l1_maps_to_golden_l2_and_passes(self):
+    def test_l2_family_passes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             candidate, golden = root / "candidate", root / "golden"
@@ -106,9 +106,9 @@ class ValidatorTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
             self.assertTrue(report["passed"])
             self.assertEqual(report["issues"]["error_count"], 0)
-            self.assertTrue(report["comparisons"]["l1_trace"]["files"]["passed"])
+            self.assertTrue(report["comparisons"]["l2_trace"]["files"]["passed"])
             self.assertEqual(
-                report["comparisons"]["l1_trace"]["semantics"]["1"]["metrics"]
+                report["comparisons"]["l2_trace"]["semantics"]["1"]["metrics"]
                 ["request_records"]["delta"],
                 0,
             )
@@ -118,6 +118,20 @@ class ValidatorTests(unittest.TestCase):
                 0,
             )
             self.assertIn("**Result:** PASS", markdown.read_text(encoding="utf-8"))
+
+    def test_legacy_directory_and_option_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate, golden = root / "candidate", root / "golden"
+            add_kernel(candidate, 1, candidate=True)
+            add_kernel(golden, 1, candidate=False)
+            (candidate / "l2_trace").rename(candidate / "l1_trace")
+            completed, report, _ = self.invoke(candidate, golden)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue(report["comparisons"]["l2_trace"]["files"]["passed"])
+            for option in ("--candidate-l2-dir", "--candidate-l1-dir"):
+                completed, report, _ = self.invoke(candidate, golden, option, "l1_trace")
+                self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_bad_elapsed_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -152,7 +166,7 @@ class ValidatorTests(unittest.TestCase):
             add_kernel(golden, 1, candidate=False)
             timing = (
                 candidate
-                / "l1_trace"
+                / "l2_trace"
                 / "kernel_1_test_kernel"
                 / "shader_0"
                 / "scheduler_0"
@@ -161,7 +175,7 @@ class ValidatorTests(unittest.TestCase):
             write(timing, extended_timing(10, 10, 10))
             completed, report, _ = self.invoke(candidate, golden)
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-            stats = report["datasets"]["candidate"]["l1_trace"]["kernels"]["1"]
+            stats = report["datasets"]["candidate"]["l2_trace"]["kernels"]["1"]
             self.assertEqual(stats["timing_schema_hist"], {"extended": 1})
             self.assertEqual(stats["timing_identity_hist"], {"ordinary": 1})
             self.assertEqual(stats["join"]["matched_requests"], 1)
@@ -174,7 +188,7 @@ class ValidatorTests(unittest.TestCase):
             add_kernel(golden, 1, candidate=False)
             timing = (
                 candidate
-                / "l1_trace"
+                / "l2_trace"
                 / "kernel_1_test_kernel"
                 / "shader_0"
                 / "scheduler_0"
@@ -187,7 +201,7 @@ class ValidatorTests(unittest.TestCase):
             )
             completed, report, _ = self.invoke(candidate, golden)
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-            stats = report["datasets"]["candidate"]["l1_trace"]["kernels"]["1"]
+            stats = report["datasets"]["candidate"]["l2_trace"]["kernels"]["1"]
             self.assertEqual(stats["timing_identity_hist"], {"sector_split": 2})
             self.assertEqual(stats["join"]["unique_requests"], 1)
             self.assertEqual(stats["join"]["matched_requests"], 1)
@@ -202,7 +216,7 @@ class ValidatorTests(unittest.TestCase):
             add_kernel(golden, 1, candidate=False)
             common = (
                 candidate
-                / "l1_trace"
+                / "l2_trace"
                 / "kernel_1_test_kernel"
                 / "shader_0"
                 / "scheduler_0"
@@ -218,7 +232,7 @@ class ValidatorTests(unittest.TestCase):
             )
             completed, report, _ = self.invoke(candidate, golden)
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-            stats = report["datasets"]["candidate"]["l1_trace"]["kernels"]["1"]
+            stats = report["datasets"]["candidate"]["l2_trace"]["kernels"]["1"]
             self.assertEqual(stats["timing_identity_hist"], {"shared_service": 2})
             self.assertEqual(stats["join"]["unique_requests"], 2)
             self.assertEqual(stats["join"]["matched_requests"], 2)

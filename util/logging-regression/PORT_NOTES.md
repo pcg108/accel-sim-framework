@@ -5,14 +5,14 @@
 This port targets Accel-Sim's trace-driven frontend (`kernelslist.g` plus
 `.traceg`/`.traceg.xz`/`.tracez`) and preserves these output families:
 
-- `l1_trace`
+- `l2_trace`
 - `icache_status`
 - `dcache_status`
 - `warp_assignments`
 - optional `scheduler_traces`
 
 Set `LOG_CACHE_TRACES=1` to enable the four required families and set
-`L1_TRACE_DIR` to select the L1/L2 directory. The variable is presence-based,
+`L2_TRACE_DIR` to select the L1/L2 directory. The variable is presence-based,
 so `LOG_CACHE_TRACES=0` also enables it; unset it to disable cache logging.
 Scheduler logging is independently controlled by the simulator trace options
 and `SCHED_TRACE_DIR`.

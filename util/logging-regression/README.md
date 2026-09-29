@@ -85,7 +85,9 @@ also add `--scheduler-trace on` to another workload, but doing so can produce a
 large output.
 
 Use `--cache-traces off` for the clean-v2/logging-v2 observational comparison.
-In that mode both `LOG_CACHE_TRACES` and `L1_TRACE_DIR` are absent.
+In that mode `LOG_CACHE_TRACES`, `L2_TRACE_DIR`, and the legacy
+`L1_TRACE_DIR` are absent. `L2_TRACE_DIR` selects the traffic log directory;
+the simulator accepts `L1_TRACE_DIR` only when `L2_TRACE_DIR` is unset.
 
 ## Result contract
 
@@ -94,7 +96,7 @@ one. It contains:
 
 ```text
 data/                         simulator working directory and trace outputs
-  l1_trace/                   L1-to-L2 and L2-to-ICNT records
+  l2_trace/                   L1-to-L2 and L2-to-ICNT records
   icache_status/
   dcache_status/
   warp_assignments/

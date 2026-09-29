@@ -84,7 +84,7 @@ L2_TIMING_EXTENDED_FIELDS = L2_TIMING_LEGACY_FIELDS | {
 ICACHE_FIELDS = {"PC", "warp", "status"}
 DCACHE_FIELDS = {"request_uid", "PC", "warp", "addr", "size", "status"}
 
-FAMILIES = ("l1_trace", "icache_status", "dcache_status", "warp_assignments")
+FAMILIES = ("l2_trace", "icache_status", "dcache_status", "warp_assignments")
 
 
 @dataclass
@@ -486,7 +486,7 @@ def validate_l1(
     limits: Limits,
     issues: Issues,
 ) -> dict[str, Any]:
-    files = collect_files(root, selected, side, "l1_trace", issues)
+    files = collect_files(root, selected, side, "l2_trace", issues)
     result: dict[str, Any] = {
         "root": str(root),
         "files": len(files),
@@ -502,12 +502,12 @@ def validate_l1(
         elif basename == "l2_to_icnt_timing.txt":
             timing_rels.add(rel)
         else:
-            issues.error(f"{side}:l1_trace:{rel}: unexpected file")
+            issues.error(f"{side}:l2_trace:{rel}: unexpected file")
 
     processed_timing: set[str] = set()
     for request_rel in request_rels:
         context = parse_path_context(
-            request_rel, "l1_to_l2_requests.txt", side, "l1_trace", limits, issues
+            request_rel, "l1_to_l2_requests.txt", side, "l2_trace", limits, issues
         )
         if context is None:
             continue
@@ -519,18 +519,18 @@ def validate_l1(
         try:
             for line_number, line in iter_nonblank(files[request_rel]):
                 uid = parse_l1_request(
-                    line, f"{side}:l1_trace:{request_rel}:{line_number}", stats, issues
+                    line, f"{side}:l2_trace:{request_rel}:{line_number}", stats, issues
                 )
                 if uid is None:
                     continue
                 valid_records += 1
                 if uid in request_uids:
                     issues.error(
-                        f"{side}:l1_trace:{request_rel}:{line_number}: duplicate request_uid={uid}"
+                        f"{side}:l2_trace:{request_rel}:{line_number}: duplicate request_uid={uid}"
                     )
                 request_uids.add(uid)
         except (OSError, UnicodeError) as exc:
-            issues.error(f"{side}:l1_trace:{request_rel}: cannot read file: {exc}")
+            issues.error(f"{side}:l2_trace:{request_rel}: cannot read file: {exc}")
         result["file_records"][request_rel] = valid_records
 
         timing_rel = str(Path(request_rel).with_name("l2_to_icnt_timing.txt").as_posix())
@@ -544,7 +544,7 @@ def validate_l1(
                 for line_number, line in iter_nonblank(files[timing_rel]):
                     uid = parse_l2_timing(
                         line,
-                        f"{side}:l1_trace:{timing_rel}:{line_number}",
+                        f"{side}:l2_trace:{timing_rel}:{line_number}",
                         stats,
                         issues,
                     )
@@ -556,10 +556,10 @@ def validate_l1(
                     else:
                         orphan_records += 1
             except (OSError, UnicodeError) as exc:
-                issues.error(f"{side}:l1_trace:{timing_rel}: cannot read file: {exc}")
+                issues.error(f"{side}:l2_trace:{timing_rel}: cannot read file: {exc}")
             result["file_records"][timing_rel] = timing_records
         else:
-            issues.error(f"{side}:l1_trace:{request_rel}: paired timing file is missing")
+            issues.error(f"{side}:l2_trace:{request_rel}: paired timing file is missing")
 
         missing_requests = len(request_uids - matched_uids)
         join = stats["join"]
@@ -570,7 +570,7 @@ def validate_l1(
         join["timing_records"] += timing_records
         if missing_requests or orphan_records:
             message = (
-                f"{side}:l1_trace:{Path(request_rel).parent}: incomplete UID join: "
+                f"{side}:l2_trace:{Path(request_rel).parent}: incomplete UID join: "
                 f"missing_requests={missing_requests}, orphan_timing_records={orphan_records}"
             )
             if limits.join_policy == "strict":
@@ -581,7 +581,7 @@ def validate_l1(
     # Timing files without a request peer still need schema validation.
     for timing_rel in sorted(timing_rels - processed_timing):
         context = parse_path_context(
-            timing_rel, "l2_to_icnt_timing.txt", side, "l1_trace", limits, issues
+            timing_rel, "l2_to_icnt_timing.txt", side, "l2_trace", limits, issues
         )
         if context is None:
             continue
@@ -592,14 +592,14 @@ def validate_l1(
         try:
             for line_number, line in iter_nonblank(files[timing_rel]):
                 uid = parse_l2_timing(
-                    line, f"{side}:l1_trace:{timing_rel}:{line_number}", stats, issues
+                    line, f"{side}:l2_trace:{timing_rel}:{line_number}", stats, issues
                 )
                 if uid is not None:
                     records += 1
         except (OSError, UnicodeError) as exc:
-            issues.error(f"{side}:l1_trace:{timing_rel}: cannot read file: {exc}")
+            issues.error(f"{side}:l2_trace:{timing_rel}: cannot read file: {exc}")
         result["file_records"][timing_rel] = records
-        message = f"{side}:l1_trace:{timing_rel}: request peer is missing; {records} orphan records"
+        message = f"{side}:l2_trace:{timing_rel}: request peer is missing; {records} orphan records"
         if limits.join_policy == "strict":
             issues.error(message)
         else:
@@ -1043,7 +1043,7 @@ def semantic_comparison(
     golden: dict[str, Any],
     selected: set[int],
 ) -> dict[str, Any]:
-    if family == "l1_trace":
+    if family == "l2_trace":
         metrics = (
             "request_records",
             "timing_records",
@@ -1091,7 +1091,7 @@ def semantic_comparison(
                 for histogram in histograms
             },
         }
-        if family == "l1_trace":
+        if family == "l2_trace":
             candidate_join = candidate_stats.get("join", {})
             golden_join = golden_stats.get("join", {})
             result[str(kernel_id)]["join"] = {
@@ -1122,7 +1122,7 @@ def plain(value: Any) -> Any:
 
 
 def kernel_metric(family: str, stats: dict[str, Any]) -> str:
-    if family == "l1_trace":
+    if family == "l2_trace":
         return f"{stats.get('request_records', 0)}/{stats.get('timing_records', 0)}"
     if family in ("icache_status", "dcache_status"):
         return str(stats.get("records", 0))
@@ -1174,7 +1174,7 @@ def markdown_report(report: dict[str, Any]) -> str:
         lines.append(f"| {kernel_id} | " + " | ".join(values) + " |")
 
     lines.extend(["", "## Candidate L1/L2 correlation", "", "| Kernel | Matched | Missing | Orphan timings | Coverage |", "|---:|---:|---:|---:|---:|"])
-    l1_kernels = report["datasets"]["candidate"]["l1_trace"]["kernels"]
+    l1_kernels = report["datasets"]["candidate"]["l2_trace"]["kernels"]
     for kernel_id in report["inputs"]["kernel_ids"]:
         join = l1_kernels.get(str(kernel_id), {}).get("join", {})
         unique = join.get("unique_requests", 0)
@@ -1223,12 +1223,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="comma-separated subset (default: all kernels found in either dataset)",
     )
     parser.add_argument(
-        "--candidate-l1-dir",
-        help="candidate L1 trace directory, absolute or relative to candidate root",
+        "--candidate-l2-dir", "--candidate-l1-dir", dest="candidate_l1_dir",
+        help="candidate L2 trace directory, absolute or relative to candidate root",
     )
     parser.add_argument(
-        "--golden-l1-dir",
-        help="golden L1 trace directory, absolute or relative to golden root",
+        "--golden-l2-dir", "--golden-l1-dir", dest="golden_l1_dir",
+        help="golden L2 trace directory, absolute or relative to golden root",
     )
     parser.add_argument(
         "--trace-dir",
@@ -1264,15 +1264,15 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     candidate_root = args.candidate.resolve()
     golden_root = args.golden.resolve()
     candidate_roots = {
-        "l1_trace": resolve_family(
-            candidate_root, args.candidate_l1_dir, ("l1_trace", "l2_trace")
+        "l2_trace": resolve_family(
+            candidate_root, args.candidate_l1_dir, ("l2_trace", "l1_trace")
         ),
         "icache_status": candidate_root / "icache_status",
         "dcache_status": candidate_root / "dcache_status",
         "warp_assignments": candidate_root / "warp_assignments",
     }
     golden_roots = {
-        "l1_trace": resolve_family(
+        "l2_trace": resolve_family(
             golden_root, args.golden_l1_dir, ("l2_trace", "l1_trace")
         ),
         "icache_status": golden_root / "icache_status",
@@ -1308,8 +1308,8 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     raw_datasets: dict[str, dict[str, Any]] = {"candidate": {}, "golden": {}}
     warp_details: dict[str, dict[int, dict[str, Any]]] = {}
     for side, roots in (("candidate", candidate_roots), ("golden", golden_roots)):
-        raw_datasets[side]["l1_trace"] = validate_l1(
-            roots["l1_trace"], selected, side, limits, issues
+        raw_datasets[side]["l2_trace"] = validate_l1(
+            roots["l2_trace"], selected, side, limits, issues
         )
         raw_datasets[side]["icache_status"] = validate_cache(
             roots["icache_status"], selected, side, "icache_status", limits, issues

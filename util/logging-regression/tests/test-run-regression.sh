@@ -70,13 +70,14 @@ set -eu
 {
   printf 'LOG_CACHE_TRACES=%s\n' "${LOG_CACHE_TRACES-<unset>}"
   printf 'L1_TRACE_DIR=%s\n' "${L1_TRACE_DIR-<unset>}"
+  printf 'L2_TRACE_DIR=%s\n' "${L2_TRACE_DIR-<unset>}"
   printf 'SCHED_TRACE_DIR=%s\n' "${SCHED_TRACE_DIR-<unset>}"
   printf 'ARGS='
   printf '<%s>' "$@"
   printf '\n'
 } >fake-observation.txt
-if [[ -n "${L1_TRACE_DIR-}" ]]; then
-  mkdir -p -- "$L1_TRACE_DIR" icache_status dcache_status warp_assignments
+if [[ -n "${L2_TRACE_DIR-}" ]]; then
+  mkdir -p -- "$L2_TRACE_DIR" icache_status dcache_status warp_assignments
 fi
 if [[ -n "${SCHED_TRACE_DIR-}" ]]; then
   mkdir -p -- "$SCHED_TRACE_DIR"
@@ -96,7 +97,7 @@ common_args=(
 )
 
 rodinia_output="$TEMP_ROOT/out-rodinia"
-LOG_CACHE_TRACES=0 L1_TRACE_DIR=/bad SCHED_TRACE_DIR=/bad \
+LOG_CACHE_TRACES=0 L1_TRACE_DIR=/legacy-bad L2_TRACE_DIR=/bad SCHED_TRACE_DIR=/bad \
   "$HARNESS_DIR/run-regression.sh" rodinia "${common_args[@]}" \
   --output-dir "$rodinia_output"
 assert_file "$rodinia_output/SUCCESS"
@@ -104,7 +105,9 @@ assert_not_exists "$rodinia_output/INCOMPLETE"
 assert_contains 'LOG_CACHE_TRACES=1' "$rodinia_output/data/fake-observation.txt"
 assert_contains 'SCHED_TRACE_DIR=<unset>' "$rodinia_output/data/fake-observation.txt"
 assert_contains '<-trace_enabled><0>' "$rodinia_output/data/fake-observation.txt"
-assert_dir "$rodinia_output/data/l1_trace"
+assert_dir "$rodinia_output/data/l2_trace"
+assert_not_exists "$rodinia_output/data/l1_trace"
+assert_contains 'L1_TRACE_DIR=<unset>' "$rodinia_output/data/fake-observation.txt"
 
 subset_output="$TEMP_ROOT/out-subset"
 "$HARNESS_DIR/run-regression.sh" resnet-subset "${common_args[@]}" \
@@ -128,12 +131,14 @@ assert len(manifest["artifacts"]["input_selection"]["trace_files"]) == 3
 PY
 
 full_output="$TEMP_ROOT/out-full"
-"$HARNESS_DIR/run-regression.sh" resnet-full "${common_args[@]}" \
+L1_TRACE_DIR=/legacy-bad L2_TRACE_DIR=/bad \
+  "$HARNESS_DIR/run-regression.sh" resnet-full "${common_args[@]}" \
   --output-dir "$full_output" --cache-traces off
 [[ "$(grep -c '^kernel-' "$full_output/inputs/trace/kernelslist.g")" == 50 ]] ||
   fail "full ResNet list does not contain 50 kernels"
 assert_contains 'LOG_CACHE_TRACES=<unset>' "$full_output/data/fake-observation.txt"
 assert_contains 'L1_TRACE_DIR=<unset>' "$full_output/data/fake-observation.txt"
+assert_contains 'L2_TRACE_DIR=<unset>' "$full_output/data/fake-observation.txt"
 
 scheduler_output="$TEMP_ROOT/out-scheduler"
 "$HARNESS_DIR/run-regression.sh" scheduler-smoke "${common_args[@]}" \

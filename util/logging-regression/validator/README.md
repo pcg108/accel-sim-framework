@@ -15,8 +15,9 @@ format additionally requires `transport_uid`, `service_uid`, `addr`,
 `transport_uid` identifies a sector/transport request and `service_uid`
 identifies the request that supplied shared L2 service.
 
-The candidate family `l1_trace` is automatically mapped to the golden family
-`l2_trace`. Use `--candidate-l1-dir` when `L1_TRACE_DIR` used another name.
+Both datasets use the `l2_trace` family. Historical `l1_trace` directories are
+accepted as a fallback. Use `--candidate-l2-dir` or `--golden-l2-dir` for custom
+paths; the old `--candidate-l1-dir` and `--golden-l1-dir` options remain aliases.
 
 ## Rodinia
 

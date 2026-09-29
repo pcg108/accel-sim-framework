@@ -312,13 +312,14 @@ fi
 declare -a command=(
   env
   -u LOG_CACHE_TRACES
+  -u L2_TRACE_DIR
   -u L1_TRACE_DIR
   -u SCHED_TRACE_DIR
 )
 if [[ "$cache_traces" == "on" ]]; then
   command+=(
     LOG_CACHE_TRACES=1
-    "L1_TRACE_DIR=$data_dir/l1_trace"
+    "L2_TRACE_DIR=$data_dir/l2_trace"
   )
 fi
 if [[ "$scheduler_trace" == "on" ]]; then
