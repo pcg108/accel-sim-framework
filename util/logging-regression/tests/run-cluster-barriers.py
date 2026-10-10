@@ -8,7 +8,9 @@ runner and validator modules. Existing collection directories are only read.
 
 import argparse
 import collections
+import contextlib
 import ctypes
+import fcntl
 import ctypes.util
 import importlib.util
 import json
@@ -336,7 +338,17 @@ def simulator(args, run, config, trace, enabled, extra=()):
 
 def validate_traffic(args, run):
     validator = args.output / "tools/validator/validate_l2_traffic.py"
-    with (run / "validator.log").open("w") as output:
+    with contextlib.ExitStack() as stack:
+        if args.validation_lock:
+            args.validation_lock.parent.mkdir(parents=True, exist_ok=True)
+            lock = stack.enter_context(args.validation_lock.open("a"))
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        available_kib = next((int(line.split()[1]) for line in Path("/proc/meminfo").read_text().splitlines()
+                              if line.startswith("MemAvailable:")), None)
+        smoke.write_json(run / "validation-resources.json", {
+            "available_memory_kib": available_kib,
+            "exclusive_validation_lock": str(args.validation_lock) if args.validation_lock else None})
+        output = stack.enter_context((run / "validator.log").open("w"))
         result = subprocess.run([sys.executable, str(validator), "--run", str(run),
                                  "--json-out", str(run / "traffic-validation.json")],
                                 stdout=output, stderr=subprocess.STDOUT, timeout=args.timeout)
@@ -529,6 +541,8 @@ def main():
     parser.add_argument("--hopper-traces", type=Path, default=Path("/accel-sim/accel-sim-framework/data/gemma4-h100/traces"))
     parser.add_argument("--resnet-baseline", type=Path, default=Path("/results/mobile-traffic-20261007/completion-timing-v2/ampere-resnet/kernel-26"))
     parser.add_argument("--timeout", type=float, default=1200)
+    parser.add_argument("--validation-lock", type=Path,
+                        help="Shared advisory lock to serialize memory-intensive validation subprocesses")
     args = parser.parse_args()
     for name in ("binary", "library_dir", "framework"):
         setattr(args, name, getattr(args, name).resolve(strict=True))
