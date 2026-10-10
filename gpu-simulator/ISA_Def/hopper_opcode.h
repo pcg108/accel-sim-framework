@@ -206,8 +206,8 @@ static const std::unordered_map<std::string, OpcodeChar> Hopper_OpcodeMap = {
     {"ARRIVES", OpcodeChar(OP_ARRIVES, ARRIVES_OP)},
 
     // UCGABAR Instructions
-    {"UCGABAR_ARV", OpcodeChar(OP_NOP, ALU_OP)},
-    {"UCGABAR_WAIT", OpcodeChar(OP_NOP, ALU_OP)},
+    {"UCGABAR_ARV", OpcodeChar(OP_UCGABAR_ARV, ALU_OP)},
+    {"UCGABAR_WAIT", OpcodeChar(OP_UCGABAR_WAIT, ALU_OP)},
 
     // WARPGROUP MMA Instructions
     // Implement WARPGROUP.DEPBAR as a DEPBAR instruction, rest of WARPGROUP can

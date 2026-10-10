@@ -492,6 +492,238 @@ static void parse_kernel_header_line(const std::string &line,
   std::cout << line << std::endl;
 }
 
+namespace {
+using cluster_key = std::tuple<unsigned, unsigned, unsigned>;
+cluster_key cluster_coords(dim3 v) { return std::make_tuple(v.x, v.y, v.z); }
+
+struct cluster_preflight_cta {
+  cluster_cta_trace_t topology;
+  unsigned header_fields = 0;
+  std::vector<bool> arrived;
+  std::vector<bool> saw_warp;
+  std::vector<bool> nonempty_warp;
+  std::vector<unsigned> live_mask;
+};
+
+class cluster_trace_preflight {
+ public:
+  explicit cluster_trace_preflight(kernel_trace_t &kernel) : kernel(kernel) {
+    threads = kernel.tb_dim_x * kernel.tb_dim_y * kernel.tb_dim_z;
+    warps = (threads + WARP_SIZE - 1) / WARP_SIZE;
+  }
+
+  cluster_preflight_cta &add_cta() {
+    ctas.emplace_back();
+    ctas.back().arrived.resize(warps, false);
+    ctas.back().saw_warp.resize(warps, false);
+    ctas.back().nonempty_warp.resize(warps, false);
+    for (unsigned first = 0; first < threads; first += WARP_SIZE) {
+      unsigned lanes = std::min<unsigned>(WARP_SIZE, threads - first);
+      ctas.back().live_mask.push_back(lanes == 32 ? 0xffffffffu
+                                                : (1u << lanes) - 1);
+    }
+    return ctas.back();
+  }
+
+  void instruction(cluster_preflight_cta &cta, unsigned warp,
+                   const std::string &opcode, unsigned mask) {
+    if (opcode == "EXIT" && mask) {
+      // EXIT can retire only part of a warp. Cluster barriers synchronize the
+      // remaining live lanes; a fully exited warp needs no matching WAIT.
+      if (warp >= warps) {
+        exit_error = "EXIT has invalid local warp ID";
+        return;
+      }
+      if (mask & ~cta.live_mask[warp])
+        exit_error = "EXIT mask includes lanes that are not live";
+      cta.live_mask[warp] &= ~mask;
+      if (!cta.live_mask[warp]) cta.arrived[warp] = false;
+      return;
+    }
+    if (opcode.compare(0, 7, "UCGABAR") != 0 || mask == 0) return;
+    active = true;
+    if (opcode != "UCGABAR_ARV" && opcode != "UCGABAR_WAIT")
+      fail("unsupported active instruction " + opcode);
+    if (warp >= warps) fail("cluster barrier has invalid local warp ID");
+    if (mask != cta.live_mask[warp])
+      fail("divergent cluster barrier active mask is unsupported");
+    if (opcode == "UCGABAR_ARV") {
+      if (cta.arrived[warp]) fail("second cluster arrival before matching wait");
+      cta.arrived[warp] = true;
+    } else {
+      if (!cta.arrived[warp]) fail("cluster wait without matching arrival");
+      cta.arrived[warp] = false;
+    }
+  }
+
+  void finish() {
+    if (!active) return;  // Preserve historical parsing for noncluster kernels.
+    if (!exit_error.empty()) fail(exit_error);
+    if (kernel.trace_verion < 3)
+      fail("cluster synchronization requires trace CTA metadata (version >= 3)");
+    if (ctas.size() != static_cast<size_t>(kernel.grid_dim_x) *
+                           kernel.grid_dim_y * kernel.grid_dim_z)
+      fail("cluster topology does not contain exactly the grid's CTAs");
+    std::set<cluster_key> seen_ctas, closed_clusters;
+    std::map<cluster_key, std::vector<const cluster_cta_trace_t *>> groups;
+    cluster_key previous;
+    bool first = true;
+    for (const auto &cta : ctas) {
+      if (cta.header_fields != 15)
+        fail("cluster topology is missing CTA, cluster, local CTA or rank "
+             "metadata");
+      if (std::find(cta.arrived.begin(), cta.arrived.end(), true) !=
+          cta.arrived.end())
+        fail("trace ends with an unmatched cluster arrival");
+      if (std::find(cta.saw_warp.begin(), cta.saw_warp.end(), false) !=
+          cta.saw_warp.end())
+        fail("cluster CTA is missing a warp trace");
+      if (std::find(cta.nonempty_warp.begin(), cta.nonempty_warp.end(), false) !=
+          cta.nonempty_warp.end())
+        fail("zero-instruction warp trace in an active cluster kernel is unsupported");
+      const auto &t = cta.topology;
+      if (t.cta_id.x >= kernel.grid_dim_x || t.cta_id.y >= kernel.grid_dim_y ||
+          t.cta_id.z >= kernel.grid_dim_z ||
+          !seen_ctas.insert(cluster_coords(t.cta_id)).second)
+        fail("cluster topology contains an out-of-grid or duplicate CTA ID");
+      auto key = cluster_coords(t.cluster_id);
+      if (!first && key != previous) {
+        closed_clusters.insert(previous);
+        if (closed_clusters.count(key))
+          fail("noncontiguous cluster members are unsupported by FIFO CTA "
+               "admission");
+      }
+      previous = key;
+      first = false;
+      groups[key].push_back(&t);
+    }
+    for (const auto &group : groups) {
+      std::set<unsigned> ranks;
+      std::set<cluster_key> local_ctas;
+      unsigned dx = 0, dy = 0, dz = 0;
+      for (const auto *t : group.second) {
+        if (t->cluster_rank >= group.second.size() ||
+            t->cluster_cta_id.x >= group.second.size() ||
+            t->cluster_cta_id.y >= group.second.size() ||
+            t->cluster_cta_id.z >= group.second.size())
+          fail("cluster rank or local CTA coordinate exceeds cluster size");
+        if (!ranks.insert(t->cluster_rank).second ||
+            !local_ctas.insert(cluster_coords(t->cluster_cta_id)).second)
+          fail("cluster topology contains duplicate ranks or local CTA IDs");
+        dx = std::max(dx, t->cluster_cta_id.x + 1);
+        dy = std::max(dy, t->cluster_cta_id.y + 1);
+        dz = std::max(dz, t->cluster_cta_id.z + 1);
+      }
+      if (static_cast<size_t>(dx) * dy * dz != group.second.size())
+        fail("cluster local CTA coordinates are not a complete rectangular "
+             "cluster");
+      for (const auto *t : group.second) {
+        const auto &local = t->cluster_cta_id;
+        if (t->cluster_rank != local.x + dx * (local.y + dy * local.z))
+          fail("cluster rank disagrees with local CTA coordinates");
+      }
+    }
+    for (const auto &cta : ctas)
+      kernel.cluster_barrier_ctas.push_back(cta.topology);
+  }
+
+ private:
+  [[noreturn]] void fail(const std::string &message) const {
+    throw std::runtime_error("Cluster trace preflight (kernel " +
+                             std::to_string(kernel.kernel_id) + "): " + message);
+  }
+  kernel_trace_t &kernel;
+  unsigned threads, warps;
+  bool active = false;
+  std::string exit_error;
+  std::vector<cluster_preflight_cta> ctas;
+};
+
+void preflight_cluster_trace(kernel_trace_t &kernel, const std::string &path) {
+  if (kernel.binary_verion != 90) return;
+  cluster_trace_preflight audit(kernel);
+  if (kernel.is_tracez) {
+    auto *reader = kernel.tracez_reader;
+    for (const auto &tb : reader->tb_index()) {
+      auto &cta = audit.add_cta();
+      cta.topology.cta_id = dim3(tb.tb_id_x, tb.tb_id_y, tb.tb_id_z);
+      cta.topology.cluster_id =
+          dim3(tb.cluster_id_x, tb.cluster_id_y, tb.cluster_id_z);
+      cta.topology.cluster_cta_id =
+          dim3(tb.cluster_cta_id_x, tb.cluster_cta_id_y, tb.cluster_cta_id_z);
+      cta.topology.cluster_rank = tb.cluster_rank;
+      cta.header_fields = 15;
+      for (unsigned wid = 0; wid < tb.warp_count; ++wid) {
+        if (wid < cta.saw_warp.size()) {
+          cta.saw_warp[wid] = true;
+          cta.nonempty_warp[wid] = tb.warps[wid].inst_count != 0;
+        }
+        WarpTraceStream stream;
+        stream.init(reader->fd(), tb.warps[wid], reader->ddict(),
+                    kernel.trace_verion, kernel.enable_lineinfo,
+                    cta.topology.cta_id, cta.topology.cluster_cta_id,
+                    cta.topology.cluster_id, cta.topology.cluster_rank);
+        for (unsigned i = 0; i < tb.warps[wid].inst_count; ++i) {
+          const auto &inst = stream.get(i);
+          audit.instruction(cta, wid, inst.opcode, inst.mask);
+        }
+      }
+    }
+  } else {
+    PipeReader reader(path);
+    std::string line;
+    cluster_preflight_cta *cta = nullptr;
+    unsigned warp = 0, instructions = 0;
+    while (reader.readLine(line)) {
+      if (line == "#BEGIN_TB") {
+        cta = &audit.add_cta();
+        continue;
+      }
+      if (line == "#END_TB") {
+        cta = nullptr;
+        continue;
+      }
+      if (!cta) continue;
+      auto &t = cta->topology;
+      if (sscanf(line.c_str(), "thread block = %u,%u,%u", &t.cta_id.x,
+                 &t.cta_id.y, &t.cta_id.z) == 3)
+        cta->header_fields |= 1;
+      else if (sscanf(line.c_str(), "cluster id = %u,%u,%u", &t.cluster_id.x,
+                      &t.cluster_id.y, &t.cluster_id.z) == 3)
+        cta->header_fields |= 2;
+      else if (sscanf(line.c_str(), "cluster cta = %u,%u,%u",
+                      &t.cluster_cta_id.x, &t.cluster_cta_id.y,
+                      &t.cluster_cta_id.z) == 3)
+        cta->header_fields |= 4;
+      else if (sscanf(line.c_str(), "cluster rank = %u", &t.cluster_rank) == 1)
+        cta->header_fields |= 8;
+      else if (sscanf(line.c_str(), "warp = %u", &warp) == 1) {
+        if (warp < cta->saw_warp.size()) cta->saw_warp[warp] = true;
+      } else if (sscanf(line.c_str(), "insts = %u", &instructions) == 1) {
+        if (warp < cta->nonempty_warp.size())
+          cta->nonempty_warp[warp] = instructions != 0;
+      } else if (line.find("UCGABAR") != std::string::npos ||
+                 line.find("EXIT") != std::string::npos) {
+        // Parse only the instruction prefix; ordinary text trace lines do not
+        // need their (potentially large) memory address lists decompressed twice.
+        std::istringstream input(line);
+        std::string ignored, opcode;
+        unsigned pc = 0, mask = 0, destinations = 0;
+        if (kernel.trace_verion < 3)
+          for (unsigned i = 0; i < 4; ++i) input >> ignored;
+        if (kernel.enable_lineinfo) input >> ignored;
+        input >> std::hex >> pc >> mask >> std::dec >> destinations;
+        for (unsigned i = 0; i < destinations; ++i) input >> ignored;
+        input >> opcode;
+        if (!input) throw std::runtime_error("Malformed cluster/EXIT trace prefix");
+        audit.instruction(*cta, warp, opcode, mask);
+      }
+    }
+  }
+  audit.finish();
+}
+}  // namespace
+
 kernel_trace_t *trace_parser::parse_kernel_info(
     const std::string &kerneltraces_filepath) {
   std::cout << "Processing kernel " << kerneltraces_filepath << std::endl;
@@ -526,6 +758,8 @@ kernel_trace_t *trace_parser::parse_kernel_info(
       }
     }
   }
+
+  preflight_cluster_trace(*kernel_info, kerneltraces_filepath);
 
   // do not close the file ifs, the kernel_finalizer will close it
   return kernel_info;

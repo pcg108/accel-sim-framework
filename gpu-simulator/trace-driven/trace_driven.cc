@@ -198,6 +198,13 @@ trace_kernel_info_t::trace_kernel_info_t(dim3 gridDim, dim3 blockDim,
   m_kernel_trace_info = kernel_trace_info;
   set_trace_kernel_id(kernel_trace_info->kernel_id);
   m_was_launched = false;
+  for (const auto &cta : kernel_trace_info->cluster_barrier_ctas) {
+    cluster_barriers().register_cta(cta.cluster_id, cta.cta_id,
+                                    cta.cluster_rank, threads_per_cta(),
+                                    WARP_SIZE);
+  }
+  if (!kernel_trace_info->cluster_barrier_ctas.empty())
+    cluster_barriers().seal();
 
   // resolve the binary version
   if (kernel_trace_info->binary_verion == HOPPER_H100_BINART_VERSION)
@@ -267,6 +274,8 @@ bool trace_warp_inst_t::parse_from_trace_struct(
   // fill active mask
   active_mask_t active_mask = trace.mask;
   set_active(active_mask);
+
+  set_cluster_barrier_op(CLUSTER_BARRIER_NONE);
 
   // fill and initialize common params
   m_decoded = true;
@@ -716,6 +725,19 @@ void trace_warp_inst_t::parseSASSInstruction(
       sp_op = INT__OP;
   }
 
+  if (opcode1 == "UCGABAR_ARV" || opcode1 == "UCGABAR_WAIT") {
+    // The preflight rejects active unsupported variants before launching CTAs.
+    // Predicated-off instructions retain their ordinary ALU completion path.
+    if (trace.mask) {
+      if (opcodeStr != opcode1)
+        throw std::runtime_error("Unsupported active cluster barrier variant: " +
+                                 opcodeStr);
+      set_cluster_barrier_op(opcode1 == "UCGABAR_ARV"
+                                 ? CLUSTER_BARRIER_ARRIVE
+                                 : CLUSTER_BARRIER_WAIT);
+    }
+  }
+
   // Fence instructions
   if (opcodeStr == "FENCE.VIEW.ASYNC.S") {
     // TODO microbenchmark for cluster fence
@@ -1049,6 +1071,8 @@ const warp_inst_t *trace_shader_core_ctx::get_next_inst(unsigned warp_id,
     // 4. The warp still has pending writes
     if (!m_warp[warp_id]->inst_in_pipeline() &&
         !m_barriers.warp_waiting_at_barrier(warp_id) &&
+        !m_warp[warp_id]->cluster_barrier_waiting() &&
+        !m_warp[warp_id]->cluster_sync_pending() &&
         m_warp[warp_id]->stores_done() &&
         !m_scoreboard->pendingWrites(warp_id)) {
       for (unsigned t = 0; t < m_warp_size; t++) {
