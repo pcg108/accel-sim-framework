@@ -107,6 +107,8 @@ def make_fixture(name, kernel):
                 records.append(memory(0x20, "LDS" if "shared" in name else "LDG.E", address, mask))
             if name == "async-ldgsts-not-ordered":
                 records.append(memory(0x20, "LDGSTS.E.BYPASS", 0x100000 + cta * 4096, mask))
+            if name == "async-gmma-not-ordered":
+                records.append(f"0020 {mask:08x} 0 HGMMA.64x256x16.F32 0 1 0 0 0 NoVal")
             if name.startswith("async-tma"):
                 addresses = " ".join(f"0x{0x100000 + cta * 4096 + 4 * lane:x}" for lane in range(8))
                 if "load" in name:
@@ -364,7 +366,7 @@ def synthetic_cases(args):
              "partial-exit-before-arrive", "exit-after-arrive-before-wait",
              "sync-load-no-destination", "sync-store-ack", "sync-l1-miss-no-destination",
              "sync-l1-hit-no-destination", "sync-shared-load-no-destination", "async-ldgsts-not-ordered",
-             "async-tma-load-not-ordered", "async-tma-store-not-ordered", "empty-warp",
+             "async-tma-load-not-ordered", "async-tma-store-not-ordered", "async-gmma-not-ordered", "empty-warp",
              "duplicate-arrival", "wait-without-arrival", "unsupported-modifier",
              "divergent-participation", "noncontiguous-clusters", "duplicate-cta", "nondense-ranks",
              "insufficient-capacity", "concurrent-clusters"]
@@ -422,7 +424,16 @@ def synthetic_cases(args):
                         preceding = [event for event in completed if event["cta"] == arrival["cta"]]
                         if not preceding or max(event["cycle"] for event in preceding) > arrival["cycle"]:
                             raise ValueError(f"Arrival did not wait for synchronous {event_name}")
-                if name.startswith("async-"):
+                if name == "async-gmma-not-ordered":
+                    # This fixture has no memory traffic or other long-latency
+                    # operation. GMMA (128 cycles) alone holds the pipeline
+                    # after both warps pass ARRV/WAIT and execute EXIT.
+                    finish = int(next(line.split("=", 1)[1] for line in statistics
+                                      if line.startswith("gpu_tot_sim_cycle ")))
+                    exits = [event["cycle"] for event in barrier_events if event["event"] == "exit"]
+                    if len(exits) != fixture["ctas"] or finish - max(exits) < 100:
+                        raise ValueError("Cluster barrier waited for the asynchronous GMMA pipeline to drain")
+                elif name.startswith("async-"):
                     end_cycles = []
                     for timing in (run / "l2_trace").rglob("l2_to_icnt_timing.txt"):
                         for line in timing.read_text().splitlines():
