@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, TextIO
 
+from l2_traffic_schema import NEW_FILES, SOURCE_FILES, parse_lrc_line, parse_source_line, parse_timing_line
+
 
 VERSION = "1.0.0"
 UINT32_MAX = (1 << 32) - 1
@@ -493,117 +495,111 @@ def validate_l1(
         "file_records": {},
         "kernels": defaultdict(new_l1_kernel),
     }
-    request_rels: list[str] = []
-    timing_rels: set[str] = set()
+    by_directory = defaultdict(dict)
     for rel in sorted(files):
         basename = Path(rel).name
-        if basename == "l1_to_l2_requests.txt":
-            request_rels.append(rel)
-        elif basename == "l2_to_icnt_timing.txt":
-            timing_rels.add(rel)
-        else:
+        if basename not in SOURCE_FILES and basename not in {"lrc_to_l2_requests.txt", "l2_to_icnt_timing.txt"}:
             issues.error(f"{side}:l2_trace:{rel}: unexpected file")
-
-    processed_timing: set[str] = set()
-    for request_rel in request_rels:
-        context = parse_path_context(
-            request_rel, "l1_to_l2_requests.txt", side, "l2_trace", limits, issues
-        )
-        if context is None:
             continue
-        kernel_id, _, _ = context
-        stats = result["kernels"][kernel_id]
-        stats["files"] += 1
-        request_uids: set[int] = set()
-        valid_records = 0
-        try:
-            for line_number, line in iter_nonblank(files[request_rel]):
-                uid = parse_l1_request(
-                    line, f"{side}:l2_trace:{request_rel}:{line_number}", stats, issues
-                )
-                if uid is None:
-                    continue
-                valid_records += 1
-                if uid in request_uids:
-                    issues.error(
-                        f"{side}:l2_trace:{request_rel}:{line_number}: duplicate request_uid={uid}"
-                    )
-                request_uids.add(uid)
-        except (OSError, UnicodeError) as exc:
-            issues.error(f"{side}:l2_trace:{request_rel}: cannot read file: {exc}")
-        result["file_records"][request_rel] = valid_records
+        context = parse_path_context(rel, basename, side, "l2_trace", limits, issues)
+        if context is not None:
+            by_directory[str(Path(rel).parent)][basename] = (rel, context)
 
-        timing_rel = str(Path(request_rel).with_name("l2_to_icnt_timing.txt").as_posix())
-        matched_uids: set[int] = set()
-        orphan_records = 0
-        timing_records = 0
-        if timing_rel in files:
-            processed_timing.add(timing_rel)
+    seen_sources = set()
+    seen_transports = set()
+    seen_services = set()
+    for directory, entries in sorted(by_directory.items()):
+        stats = result["kernels"][next(iter(entries.values()))[1][0]]
+        requests = {}
+        for basename, (rel, context) in entries.items():
+            if basename == "l2_to_icnt_timing.txt":
+                continue
+            stats["files"] += 1
+            records = 0
+            try:
+                for line_number, line in iter_nonblank(files[rel]):
+                    location = f"{side}:l2_trace:{rel}:{line_number}"
+                    try:
+                        if basename == "lrc_to_l2_requests.txt":
+                            record = parse_lrc_line(line)
+                            key = (context[0], record["service_uid"])
+                            if key in seen_services:
+                                issues.error(f"{location}: duplicate service UID={key[1]}")
+                            seen_services.add(key)
+                        else:
+                            record = parse_source_line(line, basename)
+                            uid = record["request_uid"]
+                            key = (context[0], uid)
+                            if key in seen_sources:
+                                issues.error(f"{location}: duplicate request_uid={uid}")
+                            seen_sources.add(key)
+                            requests[uid] = record
+                            if basename == "l1_to_l2_requests.txt":
+                                parse_l1_request(line, location, stats, issues)
+                        records += 1
+                        if basename in NEW_FILES:
+                            add_hist(stats, "traffic_log_records", basename)
+                    except (ValueError, TypeError, KeyError) as exc:
+                        issues.error(f"{location}: {exc}")
+            except (OSError, UnicodeError) as exc:
+                issues.error(f"{side}:l2_trace:{rel}: cannot read file: {exc}")
+            result["file_records"][rel] = records
+
+        matched = set()
+        timing_records, orphan_records = 0, 0
+        timing_entry = entries.get("l2_to_icnt_timing.txt")
+        if timing_entry:
+            rel, context = timing_entry
             stats["files"] += 1
             try:
-                for line_number, line in iter_nonblank(files[timing_rel]):
-                    uid = parse_l2_timing(
-                        line,
-                        f"{side}:l2_trace:{timing_rel}:{line_number}",
-                        stats,
-                        issues,
-                    )
+                for line_number, line in iter_nonblank(files[rel]):
+                    location = f"{side}:l2_trace:{rel}:{line_number}"
+                    uid = parse_l2_timing(line, location, stats, issues)
                     if uid is None:
                         continue
                     timing_records += 1
-                    if uid in request_uids:
-                        matched_uids.add(uid)
+                    try:
+                        timing = parse_timing_line(line, allow_legacy=True)
+                    except (ValueError, TypeError, KeyError) as exc:
+                        issues.error(f"{location}: {exc}")
+                        continue
+                    if "transport_uid" in timing:
+                        key = (context[0], timing["transport_uid"])
+                        if key in seen_transports:
+                            issues.error(f"{location}: duplicate timing transport_uid={key[1]}")
+                        seen_transports.add(key)
+                    if uid in requests:
+                        matched.add(uid)
+                        if timing["start_cycle"] != requests[uid]["source_cycle"]:
+                            issues.error(f"{location}: start_cycle disagrees with source departure")
                     else:
                         orphan_records += 1
             except (OSError, UnicodeError) as exc:
-                issues.error(f"{side}:l2_trace:{timing_rel}: cannot read file: {exc}")
-            result["file_records"][timing_rel] = timing_records
-        else:
-            issues.error(f"{side}:l2_trace:{request_rel}: paired timing file is missing")
+                issues.error(f"{side}:l2_trace:{rel}: cannot read file: {exc}")
+            result["file_records"][rel] = timing_records
+        elif requests:
+            message = f"{side}:l2_trace:{directory}: paired timing file is missing"
+            if limits.join_policy == "strict":
+                issues.error(message)
+            else:
+                issues.warning(message)
 
-        missing_requests = len(request_uids - matched_uids)
+        missing_requests = len(requests.keys() - matched)
         join = stats["join"]
-        join["unique_requests"] += len(request_uids)
-        join["matched_requests"] += len(matched_uids)
+        join["unique_requests"] += len(requests)
+        join["matched_requests"] += len(matched)
         join["missing_requests"] += missing_requests
         join["orphan_timing_records"] += orphan_records
         join["timing_records"] += timing_records
         if missing_requests or orphan_records:
             message = (
-                f"{side}:l2_trace:{Path(request_rel).parent}: incomplete UID join: "
+                f"{side}:l2_trace:{directory}: incomplete UID join: "
                 f"missing_requests={missing_requests}, orphan_timing_records={orphan_records}"
             )
             if limits.join_policy == "strict":
                 issues.error(message)
             else:
                 issues.warning(message)
-
-    # Timing files without a request peer still need schema validation.
-    for timing_rel in sorted(timing_rels - processed_timing):
-        context = parse_path_context(
-            timing_rel, "l2_to_icnt_timing.txt", side, "l2_trace", limits, issues
-        )
-        if context is None:
-            continue
-        kernel_id, _, _ = context
-        stats = result["kernels"][kernel_id]
-        stats["files"] += 1
-        records = 0
-        try:
-            for line_number, line in iter_nonblank(files[timing_rel]):
-                uid = parse_l2_timing(
-                    line, f"{side}:l2_trace:{timing_rel}:{line_number}", stats, issues
-                )
-                if uid is not None:
-                    records += 1
-        except (OSError, UnicodeError) as exc:
-            issues.error(f"{side}:l2_trace:{timing_rel}: cannot read file: {exc}")
-        result["file_records"][timing_rel] = records
-        message = f"{side}:l2_trace:{timing_rel}: request peer is missing; {records} orphan records"
-        if limits.join_policy == "strict":
-            issues.error(message)
-        else:
-            issues.warning(message)
 
     result["relative_files"] = set(files)
     return result
@@ -962,6 +958,26 @@ def compare_file_sets(
 ) -> dict[str, Any]:
     candidate_files = candidate["relative_files"]
     golden_files = golden["relative_files"]
+    if family == "l2_trace":
+        # Archived golden runs predate optional source/LRC logs. Compare the
+        # legacy file family as before; common new files are still checked for
+        # accidental empty output, and all new files receive schema validation.
+        optional = {rel for rel in candidate_files | golden_files
+                    if Path(rel).name in NEW_FILES}
+        # A timing file in a new-source-only scheduler is new too. Keep
+        # historical L1 peer comparisons strict when either side has L1 rows.
+        combined = candidate_files | golden_files
+        for rel in combined:
+            if Path(rel).name != "l2_to_icnt_timing.txt":
+                continue
+            l1_peer = Path(rel).with_name("l1_to_l2_requests.txt").as_posix()
+            new_peers = {Path(rel).with_name(name).as_posix()
+                         for name in SOURCE_FILES if name != "l1_to_l2_requests.txt"}
+            if l1_peer not in combined and new_peers & combined:
+                optional.add(rel)
+        common_optional = optional & candidate_files & golden_files
+        candidate_files = (candidate_files - optional) | common_optional
+        golden_files = (golden_files - optional) | common_optional
     missing = sorted(golden_files - candidate_files)
     extra = sorted(candidate_files - golden_files)
     if missing or extra:
@@ -1173,7 +1189,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             values.extend((kernel_metric(family, candidate_stats), kernel_metric(family, golden_stats)))
         lines.append(f"| {kernel_id} | " + " | ".join(values) + " |")
 
-    lines.extend(["", "## Candidate L1/L2 correlation", "", "| Kernel | Matched | Missing | Orphan timings | Coverage |", "|---:|---:|---:|---:|---:|"])
+    lines.extend(["", "## Candidate source/completion correlation", "", "| Kernel | Matched | Missing | Orphan timings | Coverage |", "|---:|---:|---:|---:|---:|"])
     l1_kernels = report["datasets"]["candidate"]["l2_trace"]["kernels"]
     for kernel_id in report["inputs"]["kernel_ids"]:
         join = l1_kernels.get(str(kernel_id), {}).get("join", {})

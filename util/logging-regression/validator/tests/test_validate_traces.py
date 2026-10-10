@@ -133,6 +133,72 @@ class ValidatorTests(unittest.TestCase):
                 completed, report, _ = self.invoke(candidate, golden, option, "l1_trace")
                 self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    def test_new_source_timings_join_without_l1_peer_or_old_golden_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate, golden = root / "candidate", root / "golden"
+            add_kernel(candidate, 1, candidate=True)
+            add_kernel(golden, 1, candidate=False)
+            common = candidate / "l2_trace/kernel_1_test_kernel/shader_0/scheduler_1"
+            for filename, source, uid in (("l1_bypass_to_l2.txt", "l1_bypass_load", 20),
+                                           ("tma_to_l2_requests.txt", "tma_load", 30)):
+                write(common / filename, l1_request(uid).replace("l1_to_l2_cycle", "source_to_l2_cycle").strip()
+                      + f" source={source}\n")
+            write(common / "l2_to_icnt_timing.txt", extended_timing(20, 20, 20) + extended_timing(30, 30, 30))
+            contributor = dict(request_uid=20, transport_uid=20, source="l1_bypass_load",
+                               access_type="GLOBAL_ACC_R", kernel_uid=1, sm=0, scheduler=1,
+                               dynamic_warp=0, inst_ordinal=2, PC="0x20", source_cycle=100)
+            write(common / "lrc_to_l2_requests.txt",
+                  "service_uid=20 addr=0x1000 subpartition=0 set_index=0 tag=0x1000 "
+                  "sector_mask=0x1 size=32 lrc_to_l2_cycle=120 contributor_count=1 contributors="
+                  + json.dumps([contributor], separators=(",", ":")) + "\n")
+            completed, report, _ = self.invoke(candidate, golden)
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertTrue(report["passed"], report["issues"])
+            stats = report["datasets"]["candidate"]["l2_trace"]["kernels"]["1"]
+            self.assertEqual(stats["traffic_log_records"]["lrc_to_l2_requests.txt"], 1)
+            self.assertEqual(stats["join"]["unique_requests"], 3)
+            self.assertEqual(stats["join"]["matched_requests"], 3)
+
+    def test_missing_new_source_timing_fails_union_join(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate, golden = root / "candidate", root / "golden"
+            add_kernel(candidate, 1, candidate=True)
+            add_kernel(golden, 1, candidate=False)
+            common = candidate / "l2_trace/kernel_1_test_kernel/shader_0/scheduler_0"
+            write(common / "l1_bypass_to_l2.txt",
+                  l1_request(20).replace("l1_to_l2_cycle", "source_to_l2_cycle").strip()
+                  + " source=l1_bypass_load\n")
+            completed, report, _ = self.invoke(candidate, golden)
+            self.assertEqual(completed.returncode, 1)
+            self.assertTrue(any("missing_requests=1" in e for e in report["issues"]["error_samples"]))
+
+    def test_duplicate_extended_timing_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate, golden = root / "candidate", root / "golden"
+            add_kernel(candidate, 1, candidate=True)
+            add_kernel(golden, 1, candidate=False)
+            common = candidate / "l2_trace/kernel_1_test_kernel/shader_0/scheduler_0"
+            write(common / "l2_to_icnt_timing.txt", extended_timing(10, 10, 10) * 2)
+            completed, report, _ = self.invoke(candidate, golden)
+            self.assertEqual(completed.returncode, 1)
+            self.assertTrue(any("duplicate timing transport" in e for e in report["issues"]["error_samples"]))
+
+    def test_optional_source_schema_is_validated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate, golden = root / "candidate", root / "golden"
+            add_kernel(candidate, 1, candidate=True)
+            add_kernel(golden, 1, candidate=False)
+            write(candidate / "l2_trace/kernel_1_test_kernel/shader_0/scheduler_0/tma_to_l2_requests.txt",
+                  l1_request(20).replace("l1_to_l2_cycle", "source_to_l2_cycle").strip()
+                  + " source=l1_bypass_load\n")
+            completed, report, _ = self.invoke(candidate, golden)
+            self.assertEqual(completed.returncode, 1)
+            self.assertTrue(any("different source file" in message for message in report["issues"]["error_samples"]))
+
     def test_bad_elapsed_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

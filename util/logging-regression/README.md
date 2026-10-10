@@ -96,7 +96,7 @@ one. It contains:
 
 ```text
 data/                         simulator working directory and trace outputs
-  l2_trace/                   L1-to-L2 and L2-to-ICNT records
+  l2_trace/                   source, LRC result, and completion records
   icache_status/
   dcache_status/
   warp_assignments/
@@ -126,3 +126,150 @@ bash -n run-regression.sh tests/test-run-regression.sh
 python3 -m py_compile lib/stage_inputs.py lib/manifest.py
 tests/test-run-regression.sh
 ```
+
+## Complete L2 timing coverage
+
+`l2_to_icnt_timing.txt` covers regular L1 requests, non-TMA bypass loads/stores,
+and TMA loads/stores. Join `request_uid` against the three source files and
+use `transport_uid` for individual post-split requests. LRC contributors have
+individual starts and share a service UID and memory-side completion cycle.
+Parent latency is `max(child end_cycle) - source departure cycle`, after
+confirming every audited child completed. This interval excludes the return
+interconnect and register readiness.
+
+Completed trace runs drain outstanding memory after the final kernel and emit
+`L2_TRAFFIC_FINAL_DRAIN` in `simulator.log`, separately from kernel-finish
+statistics. Strict acceptance requires a complete drain, reconciled final LRC
+counters, and exactly one valid timing per tracked ingress transport. Reports
+include per-source timing coverage and fully completed parent counts. See
+[validator/README.md](validator/README.md) and [PORT_NOTES.md](PORT_NOTES.md).
+
+When refreshing existing collections, preserve old outputs and pin the binary,
+runner, and all validator modules to the refreshed collection. Old source-only
+validation reports do not establish completion coverage. The mobile refresh
+is stored under `/results/mobile-traffic-20261007/completion-timing-v2/`.
+
+## L2 source logging first gate
+
+Replay the complete Gemma 4 kernel 8039 with the unchanged H100 configuration
+before broader testing. Use the newly rebuilt simulator and its library:
+
+```bash
+python3 util/logging-regression/run-l2-traffic-smoke.py \
+  --binary gpu-simulator/build/logging-release/accel-sim.out \
+  --library-dir gpu-simulator/build/logging-release/gpgpu-sim \
+  --output /results/l2-traffic-8039-first
+```
+
+The output directory must be new. The runner records input/configuration
+hashes, runs logging on and off, compares cycles, instructions, memory/cache
+statistics and LRC counters, and invokes `validator/validate_l2_traffic.py`.
+It also independently joins every source record's PC and instruction ordinal
+through warp assignments to the original trace, checking that every active
+source instruction is represented. `summary.json` reports the outcome and
+unexercised categories; `SUCCESS` requires all checks to pass.
+
+Kernel 8039 exercises bypass LDGSTS reads, TMA reads (including multicast),
+and TMA stores. Its ordinary LDG instructions are predicated off, so an absent
+L1 departure file is expected. Do not claim coverage of missing categories
+from a successful run of this kernel alone.
+
+After this gate passes, run the small, explicitly synthetic source cases:
+
+```bash
+python3 util/logging-regression/tests/run-l2-traffic-synthetic.py \
+  --binary gpu-simulator/build/logging-release/accel-sim.out \
+  --gate /results/l2-traffic-8039-first \
+  --output /results/l2-traffic-synthetic
+```
+
+These generated traces cover ordinary L1 loads/stores, bypass loads/stores,
+global atomics/reductions, TMA reductions, mixed-source merging, LRC disabled,
+and attribution across two overlapping kernels. A separate dirty-writeback
+case applies test-only overrides: a 1 KiB direct-mapped write-back L1,
+adaptive L1 disabled, and dirty-eviction threshold zero. Conflict stores force
+eviction, followed by a load that keeps the CTA alive while posted writebacks
+drain. Without that final load, this simulator can finish a stores-only kernel
+before its posted eviction traffic reaches L2; the validator rejects the
+result as incomplete.
+
+The cases use the fully linked
+simulator binary and retain each command, generated trace, consistency report,
+and summary. They are logging tests, not captured workloads or hardware
+performance measurements. Sector-splitting tests are provided separately by
+the C++ fixture. Use repeatable `--case` options to rerun only selected synthetic
+cases; the default runs all four. The first gate always retains the H100
+write-through configuration unchanged.
+
+## Mobile workload traffic collection
+
+`run-mobile-traffic.py` collects the four L2 traffic log types for every selected
+entry in a capture's `kernelslist.g`. It runs each kernel in a separate simulator
+process with cold caches, logging enabled, one active kernel, memcpy simulation
+disabled, and scheduler tracing disabled. This is a per-kernel logging and
+consistency check; it does not measure end-to-end inference or compare logging
+on/off performance.
+
+The available captures used for the mobile collection have three pairings:
+
+| Capture | Mobile model config | Trace timing config |
+|---|---|---|
+| ResNet-50, 50 listed kernels | `gpgpusim_8sm.config` | `SM86_RTX3070/trace.config` |
+| Gemma 4 Ampere capture, one projection kernel | `gpgpusim_8sm.config` | `SM86_RTX3070/trace.config` |
+| Gemma 4 Hopper capture, 6,539 listed kernels | `gpgpusim_8sm_hopper.config` | `SM90_H100/trace.config` |
+
+Model configs are under `gpu-simulator/gpgpu-sim/configs/model-cfgs`; trace
+timings are under `gpu-simulator/configs/tested-cfgs`. Use the matching capture
+and configuration pair. For example, to collect the available Hopper capture:
+
+```bash
+python3 util/logging-regression/run-mobile-traffic.py \
+  --binary gpu-simulator/build/logging-release/accel-sim.out \
+  --config gpu-simulator/gpgpu-sim/configs/model-cfgs/gpgpusim_8sm_hopper.config \
+  --trace-config gpu-simulator/configs/tested-cfgs/SM90_H100/trace.config \
+  --trace-dir data/gemma4-h100/traces \
+  --output /results/mobile-hopper-gemma \
+  --jobs 12 --validation-jobs 2 --timeout 1800
+```
+
+The output directory must be new. `--kernel-ids 6564,6565 6578` selects a subset;
+omitting it selects every listed kernel. `--jobs` controls parallel kernel
+workers, and `--validation-jobs` separately caps the memory-intensive validators.
+Each completed simulation gets `traffic-validation.json`, reconciling source
+records, independent interconnect audits, LRC contributors, and accepted L2
+accesses. Kernel directories also retain source hashes, commands, simulator
+logs, and status. `summary.json` is atomically updated after each kernel;
+aggregate record counts include only kernels that pass validation.
+
+Failed, timed-out, cycle-limited, and invalid-input kernels remain explicit
+failures while later kernels continue. A known malformed input can be recorded
+without replaying it using `--rejected-inputs FILE`, where `FILE` contains a JSON
+object such as `{"50": {"reason": "truncated instruction", "line": 187663628}}`.
+Retain the evidence for such rejections. `--max-cycles` is an optional safety
+bound; reaching it never counts as success.
+
+`--resume` requires the same binary, configuration, trace selection, and input
+identity. It revalidates completed simulations with the current validator and
+runs any kernels whose directories have not yet been created. It retains prior
+incomplete simulations and input rejections as failures; use a fresh output
+directory to replay those kernels. Missing source log categories are expected
+when a kernel does not generate that traffic; Ampere with LRC disabled should
+have no LRC result records.
+
+
+### Versioned collection tools and capture handoff
+
+`run-mobile-traffic.py` snapshots its executable, simulator shared libraries,
+runner, and all importable validator modules into each collection's `tools/`
+directory. `tools/manifest.json` hashes every copied file; resume checks the full
+validator package and execution identity. Successful kernel statuses include
+`timing_coverage` and `final_drain` alongside the source and consistency counts.
+
+`run-traffic-collections.py --manifest /path/to/collection.json` supervises
+multiple collections. Each manifest entry supplies `name`, `output`, and the
+runner `argv`; the top level supplies `cwd`. An optional `capture_status` path
+holds a collection until capture reports both `state=complete` and `passed=true`.
+The supervisor writes an atomic `summary.json`, preserves terminal failures,
+and terminates its child process groups on interruption. A refreshed collection
+must use a new output directory; keep prior collection outputs as historical
+evidence.
