@@ -273,3 +273,26 @@ The supervisor writes an atomic `summary.json`, preserves terminal failures,
 and terminates its child process groups on interruption. A refreshed collection
 must use a new output directory; keep prior collection outputs as historical
 evidence.
+
+## TMA multicast destination regressions
+
+`tests/run-tma-multicast.py` tests empty masks (including out-of-bounds zero
+fill), inactive instructions, remote-only delivery without an issuing-CTA
+barrier, self-only delivery, and delivery to both CTAs. Each case is replayed
+from text and `.tracez`, checks actual CTA execution and final draining, and
+checks transport/completion identities. Pass `--disable-lrc` to exercise the
+direct L2 path. It accepts `--binary`, `--library-dir`, `--config` (a directory
+containing `gpgpusim.config` and `trace.config`), and a fresh `--output` directory.
+
+The simulator interprets the multicast mask as the complete destination set,
+as specified for [Hopper TMA multicast](https://docs.nvidia.com/cuda/archive/12.0.1/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-cp-async-bulk-tensor).
+An active instruction with an empty destination set still retires, but produces
+no modeled data transfers or mbarrier transaction-byte completions. The issuing
+CTA receives multicast completion only if its bit is set. This also applies to
+out-of-bounds zero fill; an empty mask cannot signal a local barrier.
+
+The strict traffic validator continues to reject zero-destination ingress.
+Older logs containing those requests must be regenerated with corrected
+simulation; accepting or deleting their timing rows would hide incorrect
+traffic and barrier effects. These regressions verify simulator semantics,
+not hardware measurements of any speculative memory-system activity.

@@ -360,7 +360,11 @@ bool trace_warp_inst_t::parse_from_trace_struct(
     data_size = trace.tma_memadd_info->width;
     std::bitset<WARP_SIZE> exec_mask(trace.mask);
     // TMA issues on uniform pipeline, so it will issue once even with full mask
-    if (exec_mask.count() != 0) {
+    // An empty multicast destination set performs no data transfer and no
+    // mbarrier completion, including tensor-map out-of-bounds zero fill.
+    const bool empty_multicast = trace.tma_is_multicast &&
+                                 trace.tma_multicast_cta_mask == 0;
+    if (exec_mask.count() != 0 && !empty_multicast) {
       set_tma_access_addrs(trace.tma_memadd_info->addrs);
       // Set TMA mbar address and byte count
       set_tma_mbar_addr(trace.tma_mbar_addr);
@@ -369,9 +373,8 @@ bool trace_warp_inst_t::parse_from_trace_struct(
       set_tma_multicast(trace.tma_is_multicast);
       set_tma_multicast_cta_mask(trace.tma_multicast_cta_mask);
     } else {
-      // If the TMA instruction is predicated off, we set the addr array to
-      // to empty, so it won't generate any memory access during
-      // generate_mem_access()
+      // Predicated-off or destination-free TMA still retires as an instruction,
+      // but must not generate memory traffic or transaction-byte completion.
       set_tma_access_addrs(std::vector<uint64_t>());
       set_tma_mbar_addr(0);
       set_tma_byte_count(0);
