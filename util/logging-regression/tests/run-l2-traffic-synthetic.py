@@ -179,11 +179,12 @@ def run_case(args, config, name, kernels, lrc_enabled, concurrent, writeback=Fal
             "-gpgpu_lrc_enabled", str(int(lrc_enabled))]
     if writeback:
         # Test-only conflict cache: eight sets, one way, write-back, lazy fetch.
+        # The protected case tests progress below a dirty-line threshold of 100%.
         # One KiB avoids get_max_cache_multiplier's integer-KiB denominator=0.
         # The first gate always uses the unchanged H100 write-through cache.
         argv.extend(["-gpgpu_adaptive_cache_config", "0", "-gpgpu_cache:dl1",
                      "S:8:128:1,L:B:m:L:L,A:512:64,16:0,32",
-                     "-gpgpu_l1_cache_write_ratio", "0"])
+                     "-gpgpu_l1_cache_write_ratio", "100" if name == "dirty-writebacks-protected" else "0"])
     if name.startswith("dirty-writebacks-dram"):
         argv.extend(["-gpgpu_cache:dl2", "S:256:128:20,L:B:m:N:X,A:384:4,32:0,32",
                      "-gpgpu_simple_dram_model", "0" if name.endswith("detailed") else "1"])
@@ -316,7 +317,7 @@ def main():
     parser.add_argument("--gate", required=True, type=Path, help="Successful first-gate directory")
     parser.add_argument("--output", required=True, type=Path, help="New synthetic-results directory")
     parser.add_argument("--case", action="append",
-                        choices=("sources-lrc-on", "sources-lrc-off", "sources-concurrent", "dirty-writebacks",
+                        choices=("sources-lrc-on", "sources-lrc-off", "sources-concurrent", "dirty-writebacks", "dirty-writebacks-protected",
                                  "dirty-writebacks-dram-simple", "dirty-writebacks-dram-detailed",
                                  "write-allocate-simple", "write-allocate-detailed"),
                         help="Run only selected cases (repeatable); default runs all")
@@ -336,6 +337,7 @@ def main():
             ("sources-lrc-off", [(990002, 0)], False, False, False),
             ("sources-concurrent", [(990003, 0), (990004, 1)], True, True, False),
             ("dirty-writebacks", [(990005, 0)], True, False, True),
+            ("dirty-writebacks-protected", [(990011, 0)], True, False, True),
             ("dirty-writebacks-dram-simple", [(990006, 0)], True, False, True),
             ("dirty-writebacks-dram-detailed", [(990007, 0)], True, False, True),
             ("write-allocate-simple", [(990008, 0)], False, False, False),

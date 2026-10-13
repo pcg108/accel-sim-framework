@@ -296,3 +296,22 @@ Older logs containing those requests must be regenerated with corrected
 simulation; accepting or deleting their timing rows would hide incorrect
 traffic and barrier effects. These regressions verify simulator semantics,
 not hardware measurements of any speculative memory-system activity.
+
+## Cache replacement progress regressions
+
+`tests/run-cache-replacement.py --build-dir BUILD --output NEW_DIRECTORY`
+links a focused harness against the production simulator cache implementation.
+It checks LRU and FIFO selection for normal and sector caches: a set containing
+only protected modified lines and reserved ways must still admit a miss by
+replacing an unreserved modified line. Invalid and eligible clean lines retain
+priority, tag hits and sector misses retain their behavior, and a genuinely
+all-reserved set must continue to stall.
+
+The dirty-line percentage is a replacement preference. Treating it as an
+absolute allocation restriction can deadlock a set below the global threshold,
+even when memory queues have drained. The fallback applies only when that
+preference leaves no eligible candidate; it never evicts a reserved line and
+uses the configured LRU/FIFO order. Existing writeback handling processes the
+selected victim normally. The `dirty-writebacks-protected` synthetic case tests
+this path with a conflict cache and verifies writeback completion timing. These
+are simulator progress tests, not measurements of hardware replacement policy.
