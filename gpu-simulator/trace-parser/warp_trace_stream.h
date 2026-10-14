@@ -126,6 +126,8 @@ class TracezReader {
   int fd() const { return fd_; }
   ZSTD_DDict *ddict() const { return ddict_; }
 
+  const std::vector<tb_index_t> &tb_index() const { return tb_index_; }
+
   const tb_index_t *get_next_tb_index() {
     if (tb_counter_ >= tb_index_.size()) return nullptr;
     return &tb_index_[tb_counter_++];

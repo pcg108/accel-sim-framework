@@ -163,6 +163,14 @@ class PipeReader {
 
 class TracezReader;  // forward declaration
 
+// Topology discovered before launch for kernels using active cluster barriers.
+struct cluster_cta_trace_t {
+  dim3 cta_id;
+  dim3 cluster_id;
+  dim3 cluster_cta_id;
+  unsigned cluster_rank = 0;
+};
+
 struct kernel_trace_t {
   kernel_trace_t(const std::string &filePath);
   ~kernel_trace_t();
@@ -184,6 +192,9 @@ struct kernel_trace_t {
   std::string nvbit_verion;
   unsigned long long shmem_base_addr;
   unsigned long long local_base_addr;
+
+  // Empty for kernels without active UCGABAR instructions.
+  std::vector<cluster_cta_trace_t> cluster_barrier_ctas;
 
   // Text/pipe path (used for .traceg / .traceg.xz)
   PipeReader pipeReader;

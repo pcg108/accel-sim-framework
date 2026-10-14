@@ -93,3 +93,33 @@ validator, even if their source/ingress counts agree.
 For latency plots, use `max(child end_cycle) - source departure cycle` for each
 fully completed parent. The end is memory-side service completion, not SM
 arrival or register readiness. See `../PORT_NOTES.md` for the full contract.
+
+### Large completed runs
+
+`validate_l2_traffic_bounded.py --run RUN --json-out REPORT.json` runs the same
+strict traffic checks using UID-connected partitions. Its compact UID index
+joins each source parent, split transport, LRC contributor, service and timing
+reference before assigning records to a partition. Duplicate and incorrect
+cross-references stay visible to the checker. It checks the original simulator
+completion/drain metadata and reconciles global LRC counters against the sum of
+all partitions before reporting a pass.
+
+The default is 128 partitions, validated serially in separate processes.
+`--work-dir` selects a fresh scratch directory; `--partitions` changes the
+partition count. `--max-partition-bytes` rejects oversized partitions (default
+2 GiB of uncompressed input) rather than risking an uncontrolled allocation.
+The UID index scales with the number of unique identifiers and is capped by
+`--max-index-uids` (default 64 million); exceeding either limit fails validation
+without partial acceptance. The large parsed-record dictionaries exist for
+only one partition at a time. Progress,
+input SHA256 hashes, partition reports and peak RSS measurements are retained
+in the work directory. Partition reports are intermediate results, not complete
+run acceptance. Successful temporary partitions are removed; failed partitions
+are kept for diagnosis.
+
+Both strict entry points accept gzip source/LRC/timing files and use `.gz`
+audit/access files when the corresponding uncompressed file is absent. Keep
+only one source/LRC/timing representation per file: retaining both is detected
+as duplicate records. A lossless archive should record the original SHA256 and
+verify decompression before removing its uncompressed copy. These changes do
+not modify simulator logging or relax any completion requirement.

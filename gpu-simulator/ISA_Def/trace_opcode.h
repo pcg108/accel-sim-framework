@@ -132,6 +132,8 @@ enum TraceInstrOpcode {
   OP_GETLMEMBASE,
   OP_LEPC,
   OP_NOP,
+  OP_UCGABAR_ARV,
+  OP_UCGABAR_WAIT,
   OP_PMTRIG,
   OP_R2B,
   OP_S2R,

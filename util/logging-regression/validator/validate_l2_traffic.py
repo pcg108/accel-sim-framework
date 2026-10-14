@@ -9,6 +9,7 @@ required here so two production logs cannot agree by omitting the same traffic.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import re
 from collections import Counter, defaultdict
@@ -47,11 +48,14 @@ class TrafficIssues(Issues):
 
 def nonblank(path, issues):
     try:
-        with path.open(encoding="utf-8") as handle:
+        if not path.exists() and path.with_name(path.name + ".gz").exists():
+            path = path.with_name(path.name + ".gz")
+        opener = gzip.open if path.suffix == ".gz" else open
+        with opener(path, "rt", encoding="utf-8") as handle:
             for lineno, line in enumerate(handle, 1):
                 if line.strip():
                     yield f"{path}:{lineno}", line.strip()
-    except (OSError, UnicodeError) as exc:
+    except (OSError, EOFError, UnicodeError) as exc:
         issues.error(f"cannot read {path}: {exc}")
 
 
@@ -84,8 +88,9 @@ def load_production(root, issues):
     if not root.is_dir():
         issues.error(f"missing source log directory: {root}")
         return sources, groups
-    for path in sorted(root.rglob("*.txt")):
-        if path.name not in SOURCE_FILES and path.name != "lrc_to_l2_requests.txt":
+    for path in sorted([*root.rglob("*.txt"), *root.rglob("*.txt.gz")]):
+        filename = path.name.removesuffix(".gz")
+        if filename not in SOURCE_FILES and filename != "lrc_to_l2_requests.txt":
             continue
         try:
             attribution = context(path, root)
@@ -94,8 +99,8 @@ def load_production(root, issues):
             continue
         for location, line in nonblank(path, issues):
             try:
-                if path.name in SOURCE_FILES:
-                    record = parse_source_line(line, path.name)
+                if filename in SOURCE_FILES:
+                    record = parse_source_line(line, filename)
                     record.update(attribution)
                     for key in ATTRIBUTION:
                         if record[key] in SENTINELS:
@@ -381,7 +386,7 @@ def check_warps(root, sources, issues):
 
 def load_timings(root, issues):
     timings, duplicates = {}, Counter()
-    for path in sorted(root.rglob("l2_to_icnt_timing.txt")):
+    for path in sorted([*root.rglob("l2_to_icnt_timing.txt"), *root.rglob("l2_to_icnt_timing.txt.gz")]):
         try:
             attribution = context(path, root)
         except ValueError as exc:
@@ -495,7 +500,11 @@ def final_drain(text, issues):
         return {}
 
 
-def check_stats(path, ingress, groups, pure_other_services, issues):
+def check_stats(path, ingress, groups, pure_other_services, issues, *, defer_global_counters=False, _counter_totals=None):
+    # Partition validation defers shared simulator metadata and counters to the
+    # outer validator, which checks them once against the sum of all partitions.
+    if defer_global_counters:
+        issues = TrafficIssues()
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -509,8 +518,11 @@ def check_stats(path, ingress, groups, pure_other_services, issues):
                    for row in ingress.values() if row["lrc_enabled"] and not row["is_write"])
     forwarded = sum(group["sector_mask"].bit_count() for group in groups.values())
     forwarded += sum(ingress[uid]["sector_mask"].bit_count() for uid in pure_other_services)
+    excluded = len(pure_other_services)
+    if _counter_totals is not None:
+        incoming, forwarded, excluded = _counter_totals
     result = {"incoming_audit_weighted": incoming, "forwarded_results_and_excluded": forwarded,
-              "excluded_read_services": len(pure_other_services)}
+              "excluded_read_services": excluded}
     drain = final_drain(text, issues)
     for label, expected in (("ICNT to LRC", incoming), ("LRC to L2", forwarded)):
         key = label.lower().replace(" ", "_")
@@ -518,12 +530,12 @@ def check_stats(path, ingress, groups, pure_other_services, issues):
         result[key] = actual
         if actual is None:
             issues.error(f"simulator.log: missing final {label} sector counter")
-        elif actual is not None and actual != expected:
+        elif not defer_global_counters and actual != expected:
             issues.error(f"{label} sector counter={actual}, expected={expected}")
     return result, drain
 
 
-def validate(run, max_merged=4):
+def validate(run, max_merged=4, *, _defer_global_counters=False):
     issues = TrafficIssues()
     sources, groups = load_production(run / "l2_trace", issues)
     departures, ingress = load_audit(run / "l2_traffic_audit.jsonl", issues)
@@ -533,7 +545,8 @@ def validate(run, max_merged=4):
     accepted, auxiliary_count = separate_auxiliary_l2(all_accepted, ingress, issues)
     pure_other, secondary = reconcile_l2(accepted, ingress, groups, membership, issues)
     warp_checked = check_warps(run / "warp_assignments", sources, issues)
-    counters, drain = check_stats(run / "simulator.log", ingress, groups, pure_other, issues)
+    counters, drain = check_stats(run / "simulator.log", ingress, groups, pure_other, issues,
+                                  defer_global_counters=_defer_global_counters)
     timings, duplicate_timings = load_timings(run / "l2_trace", issues)
     timing_coverage = reconcile_timings(timings, duplicate_timings, sources, ingress, membership, accepted, drain, issues)
     source_counts = Counter(row["source"] for row in sources.values())
