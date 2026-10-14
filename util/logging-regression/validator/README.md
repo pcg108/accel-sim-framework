@@ -11,9 +11,15 @@ Both L2 timing formats are accepted. The historical format contains
 `request_uid`, `start_cycle`, `end_cycle`, and `elapsed_cycle`. The corrected
 format additionally requires `transport_uid`, `service_uid`, `addr`,
 `sector_mask`, and `size`. Partial mixtures are rejected. In both formats,
-`request_uid` is the identity joined to the corresponding L1 request;
+`request_uid` joins to the union of L1, non-TMA bypass, and TMA source files;
 `transport_uid` identifies a sector/transport request and `service_uid`
 identifies the request that supplied shared L2 service.
+
+The join uses the source's kernel/shader/scheduler directory and departure
+cycle. Bypass/TMA-only directories can have completion files without an L1
+file. Extended timings reject duplicate transport IDs. The historical UID join
+can confirm that a parent has at least one completion; it cannot prove that
+all split children completed without the independent audit.
 
 Both datasets use the `l2_trace` family. Historical `l1_trace` directories are
 accepted as a fallback. Use `--candidate-l2-dir` or `--golden-l2-dir` for custom
@@ -57,3 +63,33 @@ Run the self-tests with:
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+## Independent completion acceptance
+
+```bash
+python3 validate_l2_traffic.py --run /path/to/run --json-out /path/to/report.json
+```
+
+This strict validator requires the three source families as applicable,
+finalized LRC groups when enabled, `l2_traffic_audit.jsonl`, `l2_accesses.txt`,
+and `simulator.log`. Every tracked audited ingress transport requires exactly
+one nine-field `l2_to_icnt_timing.txt` row. Missing, duplicate, malformed, or
+orphan rows fail. It verifies parent/service identity, directory attribution,
+address/mask/size, source start, ordering, 64-bit elapsed arithmetic, and common
+completion cycles for LRC contributors, including untracked representatives.
+
+`simulator.log` must contain one `L2_TRAFFIC_FINAL_DRAIN` JSON record with
+`finish_cycle`, `end_cycle`, `drain_cycles`, `complete`,
+`lrc_incoming_sectors`, and `lrc_outgoing_sectors`. An incomplete drain fails,
+and final LRC counters must agree with the audit and groups. Existing kernel
+statistics may precede memory completion and are not used for this comparison.
+
+`timing_coverage` reports expected, matched, valid, missing, duplicate and
+orphan transports and fully completed parents, including per-source counts.
+A parent is complete only when every audited child has one valid completion.
+Old logs without all-source timing and final-drain evidence cannot pass this
+validator, even if their source/ingress counts agree.
+
+For latency plots, use `max(child end_cycle) - source departure cycle` for each
+fully completed parent. The end is memory-side service completion, not SM
+arrival or register readiness. See `../PORT_NOTES.md` for the full contract.

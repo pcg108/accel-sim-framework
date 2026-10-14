@@ -181,3 +181,22 @@ This line represents:
 - Opcode: `IMAD.MOV.U32`  
 - Two source registers: `R255`, `R255`  
 - Not a memory instruction (`mem_width = 0`)
+
+## Preserve synchronization when grouping traces
+
+The postprocessor preserves all captured `SYNCS.PHASECHK` instructions, including
+`TRYWAIT`, in both `.traceg` and `.tracez` output. It must not delete waits based on
+an apparent absence of arrivals: different active lanes can signal different
+remote CTA barriers, and asynchronous or multicast operations can also complete
+barriers. Removing a wait changes buffer reuse ordering and can cause deadlocks.
+
+Older grouped traces may already be missing these instructions. Rebuild them from
+the original `.trace` / `.trace.xz` captures with the corrected postprocessor;
+rebuilding the simulator alone does not repair an existing grouped trace. Preserve
+the original captures and store regenerated traces separately for provenance.
+
+Run the regression checks with:
+
+```bash
+python3 util/tracer_nvbit/tracer_tool/traces-processing/tests/test_preserve_mbarrier_waits.py
+```

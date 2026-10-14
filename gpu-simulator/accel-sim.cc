@@ -45,6 +45,7 @@ void accel_sim_framework::simulation_loop() {
   // while loop till the end of the end kernel execution
   // prints stats
 
+  bool final_drain_reported = false;
   while (commandlist_index < commandlist.size() || !kernels_info.empty()) {
     parse_commandlist();
 
@@ -74,12 +75,24 @@ void accel_sim_framework::simulation_loop() {
       cleanup(finished_kernel_uid);
     }
 
+    const bool kernels_completed =
+        commandlist_index == commandlist.size() && kernels_info.empty();
+    if (kernels_completed || m_gpgpu_sim->cycle_insn_cta_max_hit()) {
+      // cleanup() already printed the original kernel-finish statistics.
+      m_gpgpu_sim->drain_memory(
+          kernels_completed && !m_gpgpu_sim->cycle_insn_cta_max_hit());
+      final_drain_reported = true;
+    }
+
+    // update_stats() resets per-kernel CTA counters; retain a limit hit across
+    // that reset, including limits reached while draining final traffic.
+    const bool simulation_limit_hit = m_gpgpu_sim->cycle_insn_cta_max_hit();
     if (sim_cycles) {
       m_gpgpu_sim->update_stats();
       m_gpgpu_context->print_simulation_time();
     }
 
-    if (m_gpgpu_sim->cycle_insn_cta_max_hit()) {
+    if (simulation_limit_hit) {
       printf(
           "GPGPU-Sim: ** break due to reaching the maximum cycles (or "
           "instructions) **\n");
@@ -87,6 +100,7 @@ void accel_sim_framework::simulation_loop() {
       break;
     }
   }
+  if (!final_drain_reported) m_gpgpu_sim->drain_memory(true);
 }
 
 void accel_sim_framework::parse_commandlist() {

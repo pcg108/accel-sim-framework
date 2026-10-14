@@ -305,8 +305,8 @@ void nvbit_at_init() {
   GET_VAR_INT(
       active_from_start, "ACTIVE_FROM_START", 1,
       "Start instruction tracing from start or wait for cuProfilerStart "
-      "and cuProfilerStop. If set to 0, DYNAMIC_KERNEL_RANGE options have no "
-      "effect");
+      "and cuProfilerStop. DYNAMIC_KERNEL_RANGE filters launches within "
+      "the active profiler region when set to 0");
   GET_VAR_INT(verbose, "TOOL_VERBOSE", 0, "Enable verbosity inside the tool");
   GET_VAR_INT(enable_compress, "TOOL_COMPRESS", 1, "Enable traces compression");
   GET_VAR_INT(print_core_id, "TOOL_TRACE_CORE", 0,
@@ -652,10 +652,13 @@ static void enter_kernel_launch(CUcontext ctx, CUfunction func,
 
   // Mark if the kernel should be traced
   std::string func_name = std::string(nvbit_get_func_name(ctx, func, true));
-  if (active_from_start && should_trace_kernel(ctx_kernelid[ctx], func_name))
-    active_region = nvbit_instrumentation_enabled;
-  else
-    active_region = false;
+  // In profiler-controlled mode, preserve the state set by cuProfilerStart /
+  // cuProfilerStop. Resetting it here would disable every profiled launch.
+  if (active_from_start) {
+    active_region = should_trace_kernel(ctx_kernelid[ctx], func_name)
+                        ? nvbit_instrumentation_enabled
+                        : false;
+  }
 
   // Terminate tracing if the limit number of kernels is reached
   if (terminate_after_limit_number_of_kernels_reached && g_max_kernel_id != 0 &&
@@ -698,11 +701,10 @@ static void enter_kernel_launch(CUcontext ctx, CUfunction func,
   int binary_version =
       get_attr_with_kernel_fallback(func, CU_FUNC_ATTRIBUTE_BINARY_VERSION);
 
-  // Instrument the kernel if needed
-  instrument_function_if_needed(ctx, func);
-
-  // Enable or disable tracing based on the active region
-  if (active_region) {
+  // Avoid instrumenting excluded warmup/library kernels. Instrumentation is
+  // installed lazily if this function is selected in a later profiler region.
+  if (active_region && should_trace_kernel(ctx_kernelid[ctx], func_name)) {
+    instrument_function_if_needed(ctx, func);
     nvbit_enable_instrumented(ctx, func, true);
     stop_report = false;
   } else {
