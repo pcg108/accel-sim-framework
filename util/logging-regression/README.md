@@ -315,3 +315,25 @@ uses the configured LRU/FIFO order. Existing writeback handling processes the
 selected victim normally. The `dirty-writebacks-protected` synthetic case tests
 this path with a conflict cache and verifies writeback completion timing. These
 are simulator progress tests, not measurements of hardware replacement policy.
+
+## Integrated repository revisions (2026-10-14)
+
+The framework and independently versioned GPGPU-Sim repositories publish the
+completion-timing and Hopper fixes on `logging-v2`. This framework integration
+uses GPGPU-Sim revision `ea87f6447fda346d6d850b133d1c7f12a5a4cb6c`
+from `https://github.com/pcg108/gpgpu-sim_distribution.git`. Check out both
+repositories' matching revisions when building; the simulator directory is not a
+framework submodule.
+
+This integration includes source-union completion timing, final memory draining,
+strict traffic validation, UID-connected partition validation for large logs,
+preserved mbarrier waits in grouped traces, Hopper cluster arrival/wait ordering,
+TMA multicast destination handling, and cache replacement progress. The mobile
+Hopper configuration keeps GTO scheduling and LRC enabled.
+
+The GTO Hopper Gemma collection finishes with 6,502 strict passes out of 6,539;
+the remaining 37 kernels exceed resident CTA capacity. Both large kernels
+9870/13076 and all ten former empty-mask validation failures pass. Original
+attempts and per-kernel tool/config provenance are preserved in the collection.
+The collection's existing binaries and validators remain pinned to their recorded
+revisions; publishing this integration does not replace those artifacts.
