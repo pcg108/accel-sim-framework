@@ -337,3 +337,53 @@ the remaining 37 kernels exceed resident CTA capacity. Both large kernels
 attempts and per-kernel tool/config provenance are preserved in the collection.
 The collection's existing binaries and validators remain pinned to their recorded
 revisions; publishing this integration does not replace those artifacts.
+
+
+## Bounded trace-file handle cache (2026-10-26)
+
+Current `logging-v2` builds pair this framework with GPGPU-Sim revision
+`01b7ef7e99844f13954a39eed36e588b71df79e6` from
+`https://github.com/pcg108/gpgpu-sim_distribution.git`. Earlier captures retain
+their recorded simulator revisions and binaries.
+
+`TraceFileManager` keeps a bounded LRU cache of logging streams. The default
+capacity is 4,096; set `ACCELSIM_TRACE_MAX_OPEN_FILES` to a positive integer to
+request another capacity. The manager clamps that request to the process's
+soft file-descriptor limit with headroom for other simulator files. With a
+soft limit of 1,024, the default effective capacity is 960.
+
+Eviction flushes and closes the least recently used stream. A path is truncated
+only on its first successful open in the process; later opens append, including
+late completions after a kernel close or full drain. Descriptor exhaustion also
+triggers eviction and retry. Unrecoverable open, write, flush, buffer, or close
+errors terminate the run with the affected path instead of silently dropping
+log records. Callers must not retain raw stream handles.
+
+Run the standalone regressions without CUDA:
+
+```sh
+python3 util/logging-regression/tests/run-trace-file-manager.py
+```
+
+The 28 cases cover LRU ordering, partial records, append after eviction and
+kernel close, low descriptor limits, unrelated open descriptors, first-open
+retry behavior, cross-translation-unit singleton identity, capacity validation,
+and explicit I/O failures.
+
+Five fresh old/new captures passed strict traffic validation with identical
+cycles, instructions, CTA counts, and all 3,781 compared log files byte-identical
+(1,277,297,801 bytes per version):
+
+| Kernel and configuration | Simulated cycles, old = new |
+|---|---:|
+| ResNet 6, original A100 | 11,619 |
+| Gemma 6668, original H100 | 7,546 |
+| Gemma 6632, original H100, TMA | 12,859 |
+| Gemma 9874, mobile Hopper | 25,884 |
+| Histogram 1, mobile Ampere | 28,008 |
+
+The old captures used a descriptor limit of 65,536; the bounded-cache captures
+used 1,024. The two cases exceeding the new cache capacity reduced sampled
+open-descriptor peaks from 1,070 and 1,598 to 964. These comparisons establish
+logging and simulated-timing compatibility for those cases; they do not claim
+a host-runtime speedup.
